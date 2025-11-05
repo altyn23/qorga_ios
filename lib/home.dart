@@ -181,12 +181,14 @@ class _HomeScreenState extends State<HomeScreen> {
                               Icon(Icons.lightbulb_outline,
                                   size: 16, color: Colors.white),
                               SizedBox(width: 6),
-                              Text(
-                                'Көңіл-күйіңді бүгін белгілеуді ұмытпа ✨',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11.5,
-                                  fontWeight: FontWeight.w500,
+                              Flexible(
+                                child: Text(
+                                  'Көңіл-күйіңді бүгін белгілеуді ұмытпа ✨',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
                               ),
                             ],
