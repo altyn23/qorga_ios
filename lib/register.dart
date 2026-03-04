@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'config.dart';
+import 'widgets/email_validator.dart';
 import 'widgets/notification_helper.dart';
+import 'widgets/password_validator.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -99,7 +101,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       if (value == null || value.isEmpty) {
                         return "Введите email";
                       }
-                      if (!value.contains("@")) {
+                      if (!EmailValidator.isValid(value)) {
                         return "Некорректный email";
                       }
                       return null;
@@ -114,11 +116,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     ),
                     obscureText: true,
                     validator: (value) {
-                      if (value == null || value.length < 6) {
-                        return "Пароль минимум 6 символов";
-                      }
-                      return null;
+                      return PasswordValidator.validate(
+                        value,
+                        emptyMessage: "Введите пароль",
+                      );
                     },
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    PasswordValidator.requirementsShort,
+                    style: TextStyle(color: Colors.grey, fontSize: 12),
                   ),
                   const SizedBox(height: 20),
                   ElevatedButton(

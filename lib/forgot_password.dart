@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'config.dart';
+import 'widgets/email_validator.dart';
 import 'widgets/notification_helper.dart';
+import 'widgets/password_validator.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -27,7 +29,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final String _baseUrl = "$apiBaseUrl/auth";
 
   Future<void> _sendCode() async {
-    if (!_formKey.currentState!.validate() || _emailController.text.isEmpty) {
+    if (!_formKey.currentState!.validate() ||
+        !EmailValidator.isValid(_emailController.text)) {
       NotificationHelper.showError(context, "Email адресін енгізіңіз");
       return;
     }
@@ -47,6 +50,15 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       final data = jsonDecode(res.body);
 
       if (res.statusCode == 200 && data["ok"] == true) {
+        final debug = data["debug"]?.toString() ?? "";
+        if (debug == "USER_NOT_FOUND") {
+          NotificationHelper.showWarning(
+            context,
+            "Бұл email аккаунтқа тіркелмеген",
+          );
+          return;
+        }
+
         setState(() {
           _sent = true;
         });
@@ -54,8 +66,11 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         NotificationHelper.showSuccess(
             context, "Код сәтті жіберілді! Email-ді тексеріңіз");
       } else {
-        NotificationHelper.showError(
-            context, data["error"] ?? "Қате орын алды");
+        final debug = data["debug"]?.toString();
+        final errorMessage = (debug != null && debug.isNotEmpty)
+            ? "${data["error"] ?? "Қате орын алды"} ($debug)"
+            : (data["error"] ?? "Қате орын алды");
+        NotificationHelper.showError(context, errorMessage);
       }
     } catch (e) {
       NotificationHelper.showError(context, "Серверге қосылу мүмкін болмады");
@@ -157,146 +172,155 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF9F9F9),
+      backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
-        backgroundColor: const Color(0xFFF9F9F9),
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black),
-          onPressed: () => Navigator.pop(context),
-        ),
         title: const Text(
           "Құпия сөзді ұмыттыңыз ба?",
-          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        centerTitle: false,
       ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24.0),
-          child: Center(
-            child: SingleChildScrollView(
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+          child: SingleChildScrollView(
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 10),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _sent ? Icons.password : Icons.email_outlined,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _sent
+                                  ? '2-қадам: код пен жаңа құпия сөзді енгізіңіз'
+                                  : '1-қадам: Email енгізіп, код сұратыңыз',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextFormField(
+                    controller: _emailController,
+                    decoration: _buildInputDecoration("Email"),
+                    keyboardType: TextInputType.emailAddress,
+                    readOnly: _sent,
+                    validator: (value) {
+                      if (!EmailValidator.isValid(value)) {
+                        return "Дұрыс email енгізіңіз";
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  if (_sent) ...[
                     TextFormField(
-                      controller: _emailController,
-                      decoration: _buildInputDecoration("Email"),
-                      keyboardType: TextInputType.emailAddress,
-                      readOnly: _sent,
+                      controller: _codeController,
+                      decoration: _buildInputDecoration("Код"),
+                      keyboardType: TextInputType.number,
                       validator: (value) {
-                        if (value == null || !value.contains("@")) {
-                          return "Дұрыс email енгізіңіз";
+                        if (value == null || value.isEmpty) {
+                          return "Код енгізіңіз";
                         }
                         return null;
                       },
                     ),
                     const SizedBox(height: 16),
-                    if (_sent) ...[
-                      TextFormField(
-                        controller: _codeController,
-                        decoration: _buildInputDecoration("Код"),
-                        keyboardType: TextInputType.number,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return "Код енгізіңіз";
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _newPassController,
-                        decoration:
-                            _buildInputDecoration("Жаңа құпия сөз").copyWith(
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _isNewPassObscured
-                                  ? Icons.visibility_off
-                                  : Icons.visibility,
-                            ),
-                            onPressed: () {
-                              setState(() {
-                                _isNewPassObscured = !_isNewPassObscured;
-                              });
-                            },
+                    TextFormField(
+                      controller: _newPassController,
+                      decoration:
+                          _buildInputDecoration("Жаңа құпия сөз").copyWith(
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _isNewPassObscured
+                                ? Icons.visibility_off
+                                : Icons.visibility,
                           ),
+                          onPressed: () {
+                            setState(() {
+                              _isNewPassObscured = !_isNewPassObscured;
+                            });
+                          },
                         ),
-                        obscureText: _isNewPassObscured,
-                        validator: (value) {
-                          if (value == null || value.length < 6) {
-                            return "Кемінде 6 таңба болуы керек";
-                          }
-                          return null;
-                        },
                       ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _confirmPassController,
-                        decoration:
-                            _buildInputDecoration("Жаңа құпия сөзді растаңыз")
-                                .copyWith(
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _isConfirmPassObscured
-                                  ? Icons.visibility_off
-                                  : Icons.visibility,
-                            ),
-                            onPressed: () {
-                              setState(() {
-                                _isConfirmPassObscured =
-                                    !_isConfirmPassObscured;
-                              });
-                            },
+                      obscureText: _isNewPassObscured,
+                      validator: (value) {
+                        return PasswordValidator.validate(value);
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _confirmPassController,
+                      decoration:
+                          _buildInputDecoration("Жаңа құпия сөзді растаңыз")
+                              .copyWith(
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _isConfirmPassObscured
+                                ? Icons.visibility_off
+                                : Icons.visibility,
                           ),
-                        ),
-                        obscureText: _isConfirmPassObscured,
-                        validator: (value) {
-                          if (value != _newPassController.text) {
-                            return "Құпия сөздер сәйкес келмейді";
-                          }
-                          return null;
-                        },
-                      ),
-                    ],
-                    const SizedBox(height: 20),
-                    ElevatedButton(
-                      onPressed: _loading
-                          ? null
-                          : _sent
-                              ? _resetPassword
-                              : _sendCode,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFE3E4FF),
-                        foregroundColor: const Color(0xFF4C50AF),
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          onPressed: () {
+                            setState(() {
+                              _isConfirmPassObscured = !_isConfirmPassObscured;
+                            });
+                          },
                         ),
                       ),
-                      child: _loading
-                          ? const SizedBox(
-                              height: 24,
-                              width: 24,
-                              child: CircularProgressIndicator(
-                                color: Color(0xFF4C50AF),
-                                strokeWidth: 2,
-                              ),
-                            )
-                          : Text(
-                              _sent ? "Құпия сөзді өзгерту" : "Код жіберу",
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
+                      obscureText: _isConfirmPassObscured,
+                      validator: (value) {
+                        if (value != _newPassController.text) {
+                          return "Құпия сөздер сәйкес келмейді";
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      PasswordValidator.requirementsShort,
+                      style: TextStyle(color: Colors.grey, fontSize: 12),
                     ),
                   ],
-                ),
+                  const SizedBox(height: 20),
+                  ElevatedButton(
+                    onPressed: _loading
+                        ? null
+                        : _sent
+                            ? _resetPassword
+                            : _sendCode,
+                    style: ElevatedButton.styleFrom(
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: _loading
+                        ? const SizedBox(
+                            height: 24,
+                            width: 24,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Text(
+                            _sent ? "Құпия сөзді өзгерту" : "Код жіберу",
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                  ),
+                ],
               ),
             ),
           ),

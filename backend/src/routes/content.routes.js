@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
@@ -33,15 +33,49 @@ function extensionFromMime(mimeType) {
 }
 
 async function getJson(url) {
-  const r = await fetch(url);
-  const text = await r.text();
-  let json;
-  try { json = JSON.parse(text); } catch (_) { json = { raw: text }; }
-  if (!r.ok) {
-    const msg = json?.message || json?.error || `HTTP ${r.status}`;
-    throw new Error(`Upstream error: ${msg}`);
-  }
-  return json;
+  const r = await axios.get(url, { timeout: 12000 });
+  return r.data;
+}
+
+function getFallbackArticles() {
+  return [
+    {
+      title: 'Teen mental health',
+      description:
+          'WHO materials and updates on adolescent mental health and support.',
+      url: 'https://www.who.int/news-room/fact-sheets/detail/adolescent-mental-health',
+      imageUrl: '',
+      source: 'WHO',
+      publishedAt: null,
+    },
+    {
+      title: 'Bullying prevention resources',
+      description:
+          'UNICEF guidance and practical materials for parents and schools.',
+      url: 'https://www.unicef.org/protection/bullying',
+      imageUrl: '',
+      source: 'UNICEF',
+      publishedAt: null,
+    },
+    {
+      title: 'Youth and anxiety support tips',
+      description:
+          'Practical recommendations and evidence-based support approaches.',
+      url: 'https://www.mind.org.uk/information-support/for-children-and-young-people/',
+      imageUrl: '',
+      source: 'Mind',
+      publishedAt: null,
+    },
+    {
+      title: 'Helping children with stress',
+      description:
+          'Psychological support suggestions for families and educators.',
+      url: 'https://www.apa.org/topics/children/stress',
+      imageUrl: '',
+      source: 'APA',
+      publishedAt: null,
+    },
+  ];
 }
 
 router.get('/articles', async (req, res) => {
@@ -51,7 +85,13 @@ router.get('/articles', async (req, res) => {
     const max = Math.min(parseInt(req.query.max || '10', 10), 20);
 
     if (!process.env.NEWS_API_KEY) {
-      return res.status(500).json({ ok: false, error: 'NEWS_API_KEY missing' });
+      return res.json({
+        ok: true,
+        langTried: lang,
+        total: getFallbackArticles().length,
+        items: getFallbackArticles(),
+        fallback: true,
+      });
     }
 
     // Поисковый запрос
@@ -83,7 +123,14 @@ router.get('/articles', async (req, res) => {
     return res.json({ ok: true, langTried: lang, total: items.length, items });
   } catch (e) {
     console.error('articles error:', e);
-    return res.status(502).json({ ok: false, error: e.message || 'Failed to fetch articles' });
+    const fallback = getFallbackArticles();
+    return res.json({
+      ok: true,
+      total: fallback.length,
+      items: fallback,
+      fallback: true,
+      error: e.message || 'Failed to fetch articles',
+    });
   }
 });
 

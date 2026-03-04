@@ -9,6 +9,11 @@ const { emitChatMessage } = require('../socket/chat.socket');
 const DEFAULT_PSYCHOLOGIST_EMAIL = (
   process.env.DEFAULT_PSYCHOLOGIST_EMAIL || 'altyn2305@bk.ru'
 ).toLowerCase();
+const DEFAULT_PSYCHOLOGIST_GREETING =
+  (
+    process.env.DEFAULT_PSYCHOLOGIST_GREETING ||
+    'Сәлем! Менің атым — Қабыкен Алтынай Амангелдіқызы. Мен Qopga қосымшасының психологымын. Егер сізге менің көмегім қажет болса, кез келген уақытта маған жаза аласыз.'
+  ).trim();
 
 function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(id);
@@ -47,6 +52,38 @@ async function findPsychologistByEmail() {
     { email: DEFAULT_PSYCHOLOGIST_EMAIL },
     { email: 1, displayName: 1, role: 1 }
   ).lean();
+}
+
+async function ensureDefaultPsychologistGreeting({ userId, psychologistId, io }) {
+  const uid = normalizeId(userId);
+  const pid = normalizeId(psychologistId);
+  if (!isValidObjectId(uid) || !isValidObjectId(pid) || uid === pid) {
+    return null;
+  }
+
+  const chatId = buildHumanChatId(uid, pid);
+  const hasMessages = await ChatMessage.exists({
+    chatId,
+    $or: [{ chatType: 'human' }, { chatType: { $exists: false } }],
+  });
+
+  if (hasMessages) {
+    return null;
+  }
+
+  const greeting = await ChatMessage.create({
+    chatId,
+    chatType: 'human',
+    senderType: 'user',
+    recipientType: 'user',
+    senderId: pid,
+    recipientId: uid,
+    text: DEFAULT_PSYCHOLOGIST_GREETING,
+    read: false,
+  });
+
+  emitChatMessage(io, greeting);
+  return greeting;
 }
 
 async function generateAiReply(message) {
@@ -119,6 +156,7 @@ async function getLastMessageForChat(chatId, userId, peerId) {
 // GET /chat/list?userId=...
 router.get('/list', async (req, res) => {
   try {
+    const io = req.app.get('io');
     const userId = normalizeId(req.query.userId);
     if (!isValidObjectId(userId)) {
       return res.status(400).json({ ok: false, error: 'Valid userId is required' });
@@ -231,6 +269,11 @@ router.get('/list', async (req, res) => {
 
     if (psychologist?._id) {
       const pid = String(psychologist._id);
+      await ensureDefaultPsychologistGreeting({
+        userId,
+        psychologistId: pid,
+        io,
+      });
       const lastHuman = await getLastMessageForChat(
         buildHumanChatId(userId, pid),
         userId,

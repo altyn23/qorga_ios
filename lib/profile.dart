@@ -1,11 +1,16 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'config.dart';
 import 'login.dart';
 import 'static.dart';
+import 'widgets/email_validator.dart';
+import 'widgets/password_validator.dart';
+import 'theme/theme_controller.dart';
 
 const Color kPrimaryColor = Color(0xFF3B82F6);
 
@@ -31,6 +36,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _confirmPasswordFocusNode = FocusNode();
 
   String? _userId;
+  String _role = 'user';
+  String _avatarBase64 = '';
+  bool _notificationsEnabled = true;
 
   bool _isLoading = false;
   bool _isDataLoaded = false;
@@ -77,15 +85,51 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     setState(() {
       _userId = prefs.getString('userId');
+      _role = (prefs.getString('role') ?? 'user').trim();
       _nameController.text = prefs.getString('name') ?? '';
       _emailController.text = prefs.getString('email') ?? '';
+      _avatarBase64 = prefs.getString('avatarBase64') ?? '';
+      _notificationsEnabled = prefs.getBool('notificationsEnabled') ?? true;
       _isLoading = false;
       _isDataLoaded = true;
     });
 
     if (_userId != null) {
-      await _loadMoodStats();
+      await _loadProfileFromBackend();
+      if (_role != 'psychologist') {
+        await _loadMoodStats();
+      }
     }
+  }
+
+  Future<void> _loadProfileFromBackend() async {
+    if (_userId == null) return;
+
+    try {
+      final uri = Uri.parse("$apiBaseUrl/user/$_userId");
+      final res = await http.get(uri);
+      if (res.statusCode != 200) return;
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (data['ok'] != true || data['user'] is! Map<String, dynamic>) return;
+
+      final user = data['user'] as Map<String, dynamic>;
+      final name = (user['name'] ?? '').toString();
+      final email = (user['email'] ?? '').toString();
+      final avatar = (user['avatarBase64'] ?? '').toString();
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('name', name);
+      await prefs.setString('email', email);
+      await prefs.setString('avatarBase64', avatar);
+
+      if (!mounted) return;
+      setState(() {
+        _nameController.text = name;
+        _emailController.text = email;
+        _avatarBase64 = avatar;
+      });
+    } catch (_) {}
   }
 
   Future<void> _loadMoodStats() async {
@@ -277,6 +321,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final body = {
       "name": _nameController.text.trim(),
       "email": _emailController.text.trim(),
+      "avatarBase64": _avatarBase64,
     };
 
     if (_passwordController.text.isNotEmpty) {
@@ -299,6 +344,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('name', responseData['user']['name'] ?? '');
         await prefs.setString('email', responseData['user']['email'] ?? '');
+        await prefs.setString(
+            'avatarBase64', responseData['user']['avatarBase64'] ?? '');
 
         _showSnackBar("Профиль сәтті жаңартылды!", isError: false);
 
@@ -307,6 +354,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _confirmPasswordController.clear();
         FocusScope.of(context).unfocus();
         setState(() {
+          _avatarBase64 =
+              (responseData['user']['avatarBase64'] ?? '').toString();
           _isPasswordSectionVisible = false;
           _isPasswordObscured = true;
           _isOldPasswordObscured = true;
@@ -335,6 +384,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     await prefs.remove('userId');
     await prefs.remove('email');
     await prefs.remove('name');
+    await prefs.remove('avatarBase64');
 
     if (!mounted) return;
 
@@ -343,6 +393,56 @@ class _ProfileScreenState extends State<ProfileScreen> {
       MaterialPageRoute(builder: (context) => const LoginScreen()),
       (Route<dynamic> route) => false,
     );
+  }
+
+  Future<void> _pickAvatar() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: false,
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final picked = result.files.single;
+    final bytes = picked.bytes;
+    if (bytes == null || bytes.isEmpty) {
+      _showSnackBar("Фото оқылмады", isError: true);
+      return;
+    }
+
+    final ext = (picked.extension ?? '').toLowerCase();
+    final mime = switch (ext) {
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'webp' => 'image/webp',
+      _ => 'image/png',
+    };
+    final base64Data = base64Encode(bytes);
+    final dataUri = 'data:$mime;base64,$base64Data';
+
+    if (!mounted) return;
+    setState(() => _avatarBase64 = dataUri);
+    _showSnackBar(
+      "Фото таңдалды. Өзгерісті сақтау үшін жоғарыдағы құсбелгіні басыңыз.",
+      isError: false,
+    );
+  }
+
+  Uint8List? _avatarBytes() {
+    if (_avatarBase64.isEmpty) return null;
+    final parts = _avatarBase64.split(',');
+    if (parts.length < 2) return null;
+    try {
+      return base64Decode(parts.last);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _toggleNotifications(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('notificationsEnabled', value);
+    if (!mounted) return;
+    setState(() => _notificationsEnabled = value);
   }
 
   void _showSnackBar(String message, {required bool isError}) {
@@ -412,15 +512,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Widget _buildSettingSwitchTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      child: SwitchListTile(
+        secondary: Icon(icon, color: Theme.of(context).colorScheme.primary),
+        title: Text(title),
+        subtitle: Text(subtitle),
+        value: value,
+        onChanged: onChanged,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFEAF3FF),
+      backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
         title: const Text('Профиль'),
         centerTitle: true,
-        backgroundColor: kPrimaryColor,
-        elevation: 0,
         actions: [
           _isLoading
               ? const Padding(
@@ -444,11 +561,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
               children: [
                 const SizedBox(height: 16),
                 Center(
-                  child: CircleAvatar(
-                    radius: 50,
-                    backgroundColor: kPrimaryColor,
-                    child:
-                        const Icon(Icons.person, color: Colors.white, size: 58),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Builder(builder: (context) {
+                        final avatarBytes = _avatarBytes();
+                        return CircleAvatar(
+                          radius: 50,
+                          backgroundColor:
+                              Theme.of(context).colorScheme.primaryContainer,
+                          backgroundImage: avatarBytes != null
+                              ? MemoryImage(avatarBytes)
+                              : null,
+                          child: avatarBytes == null
+                              ? Icon(
+                                  Icons.person,
+                                  color: Theme.of(context).colorScheme.primary,
+                                  size: 58,
+                                )
+                              : null,
+                        );
+                      }),
+                      Positioned(
+                        right: -6,
+                        bottom: -6,
+                        child: IconButton.filledTonal(
+                          onPressed: _pickAvatar,
+                          icon: const Icon(Icons.edit),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -473,30 +615,52 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
                 const SizedBox(height: 26),
+                if (_role != 'psychologist') ...[
+                  const Text(
+                    'Есеп',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 10),
+                  _profileCard(
+                    Icons.mood,
+                    'Көңіл-күй статистикасы',
+                    _moodStatsSubtitle,
+                    onTap: _userId == null
+                        ? null
+                        : () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => StatsScreen(
+                                  baseUrl: apiBaseUrl,
+                                  userId: _userId!,
+                                ),
+                              ),
+                            );
+                          },
+                  ),
+                  const SizedBox(height: 24),
+                ],
                 const Text(
-                  'Есеп',
+                  'Қолданба',
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 10),
-                _profileCard(
-                  Icons.mood,
-                  'Көңіл-күй статистикасы',
-                  _moodStatsSubtitle,
-                  onTap: _userId == null
-                      ? null
-                      : () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => StatsScreen(
-                                baseUrl: apiBaseUrl,
-                                userId: _userId!,
-                              ),
-                            ),
-                          );
-                        },
+                _buildSettingSwitchTile(
+                  icon: Icons.notifications_none,
+                  title: 'Хабарландырулар',
+                  subtitle: 'Маңызды еске салуларды алу',
+                  value: _notificationsEnabled,
+                  onChanged: _toggleNotifications,
                 ),
-                const SizedBox(height: 24),
+                _buildSettingSwitchTile(
+                  icon: Icons.dark_mode_outlined,
+                  title: 'Қараңғы режим',
+                  subtitle: 'Light / Dark тақырыбы',
+                  value: ThemeController.isDark,
+                  onChanged: ThemeController.setDarkMode,
+                ),
+                const SizedBox(height: 10),
                 const Text(
                   'Баптаулар',
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
@@ -538,7 +702,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 label: "Email",
                                 keyboardType: TextInputType.emailAddress,
                                 validator: (value) {
-                                  if (value == null || !value.contains('@')) {
+                                  if (!EmailValidator.isValid(value)) {
                                     return "Дұрыс email енгізіңіз";
                                   }
                                   return null;
@@ -618,12 +782,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 focusNode: _passwordFocusNode,
                                 validator: (value) {
                                   if (_oldPasswordController.text.isNotEmpty) {
-                                    if (value == null || value.isEmpty) {
-                                      return "Жаңа құпия сөзді енгізіңіз";
-                                    }
-                                    if (value.length < 6) {
-                                      return "Кемінде 6 таңба болуы керек";
-                                    }
+                                    return PasswordValidator.validate(
+                                      value,
+                                      emptyMessage:
+                                          "Жаңа құпия сөзді енгізіңіз",
+                                    );
                                   }
                                   return null;
                                 },
@@ -677,7 +840,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 padding: EdgeInsets.symmetric(
                                     horizontal: 16.0, vertical: 8.0),
                                 child: Text(
-                                  "Жаңа құпия сөзіңіз кемінде 6 таңбадан тұруы керек.",
+                                  PasswordValidator.requirementsShort,
                                   style: TextStyle(
                                     color: Colors.grey,
                                     fontSize: 13,

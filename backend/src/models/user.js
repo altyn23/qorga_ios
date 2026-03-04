@@ -26,6 +26,11 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
+    avatarBase64: {
+      type: String,
+      default: '',
+    },
+
     role: {
       type: String,
       default: 'user',

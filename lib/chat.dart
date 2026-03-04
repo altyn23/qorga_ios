@@ -61,6 +61,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _userId;
   String _userRole = 'user';
   List<_ChatRoom> _rooms = const [];
+  Set<String> _pinnedRoomIds = <String>{};
+  String _searchQuery = '';
 
   @override
   void initState() {
@@ -84,6 +86,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _userId = userId.isEmpty ? null : userId;
       _userRole = role.isEmpty ? 'user' : role;
+      _pinnedRoomIds = (prefs.getStringList(_pinKey(userId)) ?? const [])
+          .where((e) => e.trim().isNotEmpty)
+          .toSet();
     });
 
     if (_userId == null) {
@@ -93,6 +98,43 @@ class _ChatScreenState extends State<ChatScreen> {
 
     await _loadRooms(initial: true);
     _connectRoomsSocket();
+  }
+
+  String _pinKey(String userId) => 'pinnedRooms_$userId';
+
+  Future<void> _togglePinned(_ChatRoom room) async {
+    if (_userId == null) return;
+    final next = <String>{..._pinnedRoomIds};
+    if (next.contains(room.chatId)) {
+      next.remove(room.chatId);
+    } else {
+      next.add(room.chatId);
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_pinKey(_userId!), next.toList());
+
+    if (!mounted) return;
+    setState(() => _pinnedRoomIds = next);
+  }
+
+  List<_ChatRoom> get _visibleRooms {
+    final query = _searchQuery.trim().toLowerCase();
+    final filtered = _rooms.where((room) {
+      if (query.isEmpty) return true;
+      return room.title.toLowerCase().contains(query) ||
+          room.subtitle.toLowerCase().contains(query);
+    }).toList();
+
+    filtered.sort((a, b) {
+      final aPinned = _pinnedRoomIds.contains(a.chatId) ? 1 : 0;
+      final bPinned = _pinnedRoomIds.contains(b.chatId) ? 1 : 0;
+      if (aPinned != bPinned) return bPinned.compareTo(aPinned);
+      final aTime = a.lastAt?.millisecondsSinceEpoch ?? 0;
+      final bTime = b.lastAt?.millisecondsSinceEpoch ?? 0;
+      return bTime.compareTo(aTime);
+    });
+    return filtered;
   }
 
   Future<void> _loadRooms({bool initial = false}) async {
@@ -233,6 +275,16 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+            child: TextField(
+              onChanged: (value) => setState(() => _searchQuery = value),
+              decoration: const InputDecoration(
+                hintText: 'Чаттан іздеу...',
+                prefixIcon: Icon(Icons.search),
+              ),
+            ),
+          ),
           if (_errorText != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
@@ -243,21 +295,25 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           Expanded(
-            child: _rooms.isEmpty
+            child: _visibleRooms.isEmpty
                 ? Center(
                     child: Text(
-                      _userRole == 'psychologist'
-                          ? 'Пайдаланушылардан хабарлама әлі жоқ.'
-                          : 'Чаттар әлі жоқ.',
+                      _searchQuery.trim().isNotEmpty
+                          ? 'Іздеу бойынша чат табылмады.'
+                          : (_userRole == 'psychologist'
+                              ? 'Пайдаланушылардан хабарлама әлі жоқ.'
+                              : 'Чаттар әлі жоқ.'),
                     ),
                   )
                 : ListView.separated(
-                    itemCount: _rooms.length,
+                    itemCount: _visibleRooms.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (context, index) {
-                      final room = _rooms[index];
+                      final room = _visibleRooms[index];
+                      final pinned = _pinnedRoomIds.contains(room.chatId);
                       return ListTile(
                         onTap: () => _openRoom(room),
+                        onLongPress: () => _togglePinned(room),
                         leading: CircleAvatar(
                           backgroundColor: room.kind == 'ai'
                               ? theme.colorScheme.primary
@@ -270,10 +326,22 @@ class _ChatScreenState extends State<ChatScreen> {
                                 : Icons.person_outline,
                           ),
                         ),
-                        title: Text(
-                          room.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        title: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                room.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (pinned)
+                              Icon(
+                                Icons.push_pin,
+                                size: 16,
+                                color: theme.colorScheme.primary,
+                              ),
+                          ],
                         ),
                         subtitle: Text(
                           room.subtitle.isEmpty ? 'Жаңа чат' : room.subtitle,
@@ -303,6 +371,14 @@ class _ChatScreenState extends State<ChatScreen> {
                                   style: const TextStyle(
                                       color: Colors.white, fontSize: 11),
                                 ),
+                              )
+                            else
+                              Text(
+                                'Оқылды',
+                                style: TextStyle(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                  fontSize: 11,
+                                ),
                               ),
                           ],
                         ),
@@ -313,23 +389,28 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: 2,
+        currentIndex: _userRole == 'psychologist' ? 0 : 2,
         onTap: (index) {
-          if (index != 2) Navigator.of(context).pop(index);
+          final chatTabIndex = _userRole == 'psychologist' ? 0 : 2;
+          if (index != chatTabIndex) Navigator.of(context).pop(index);
         },
-        type: BottomNavigationBarType.fixed,
-        selectedItemColor: theme.colorScheme.primary,
-        unselectedItemColor: Colors.grey[600],
-        items: const [
-          BottomNavigationBarItem(
-              icon: Icon(Icons.home_outlined), label: 'Басты'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.favorite_border), label: 'Көңіл-күй'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.chat_bubble_outline), label: 'Чат'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.newspaper), label: 'Мақалалар'),
-        ],
+        items: _userRole == 'psychologist'
+            ? const [
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.chat_bubble_outline), label: 'Чаттар'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.person_outline), label: 'Профиль'),
+              ]
+            : const [
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.home_outlined), label: 'Басты'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.favorite_border), label: 'Көңіл-күй'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.chat_bubble_outline), label: 'Чат'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.newspaper), label: 'Мақалалар'),
+              ],
       ),
     );
   }
@@ -639,10 +720,29 @@ class _ConversationScreenState extends State<_ConversationScreen> {
                             children: [
                               Text(msg.text),
                               const SizedBox(height: 4),
-                              Text(
-                                _time(msg.createdAt),
-                                style: TextStyle(
-                                    fontSize: 11, color: Colors.grey[600]),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _time(msg.createdAt),
+                                    style: TextStyle(
+                                        fontSize: 11, color: Colors.grey[600]),
+                                  ),
+                                  if (isMine) ...[
+                                    const SizedBox(width: 6),
+                                    Icon(
+                                      _socketConnected
+                                          ? Icons.done_all
+                                          : Icons.done,
+                                      size: 14,
+                                      color: _socketConnected
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                          : Colors.grey[600],
+                                    ),
+                                  ],
+                                ],
                               ),
                             ],
                           ),

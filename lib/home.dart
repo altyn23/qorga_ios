@@ -1,5 +1,7 @@
 import 'dart:math';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'chat.dart';
@@ -10,7 +12,9 @@ import 'profile.dart';
 import 'news.dart';
 import 'help.dart';
 import 'about_us.dart';
-import 'test.dart';
+import 'psychology_test.dart';
+import 'services/local_notification_service.dart';
+import 'widgets/notification_helper.dart';
 
 const Color kPrimaryColor = Color(0xFF3B82F6);
 
@@ -27,7 +31,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _userId;
   String? _email;
   String? _name;
+  String _role = 'user';
   bool _isLoading = true;
+  List<String> _recentActions = const [];
+  bool _checkingAlerts = false;
 
   @override
   void initState() {
@@ -43,8 +50,66 @@ class _HomeScreenState extends State<HomeScreen> {
       _userId = prefs.getString('userId');
       _email = prefs.getString('email');
       _name = prefs.getString('name');
+      _role = (prefs.getString('role') ?? 'user').trim();
+      _recentActions = prefs.getStringList('recentActions') ?? const [];
+      if (_role == 'psychologist' && _tab > 1) {
+        _tab = 0;
+      }
       _isLoading = false;
     });
+
+    await _checkUnreadAlerts();
+  }
+
+  Future<void> _checkUnreadAlerts() async {
+    if (_userId == null || _checkingAlerts) return;
+    if (_role == 'psychologist') return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final notificationsEnabled = prefs.getBool('notificationsEnabled') ?? true;
+    if (!notificationsEnabled) return;
+
+    _checkingAlerts = true;
+    try {
+      final uri = Uri.parse('$apiBaseUrl/user/$_userId/alerts?unread=true');
+      final res = await http.get(uri);
+      if (res.statusCode != 200) return;
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final items = (data['items'] as List?) ?? const [];
+      if (items.isEmpty) return;
+
+      for (final item in items) {
+        final map = Map<String, dynamic>.from(item as Map);
+        final alertId = map['id']?.toString() ?? '';
+        final message = map['message']?.toString() ?? '';
+        if (message.isNotEmpty && mounted) {
+          NotificationHelper.showInfo(context, message);
+          await LocalNotificationService.showMoodRiskNotification(message);
+        }
+
+        if (alertId.isNotEmpty) {
+          await http.post(
+            Uri.parse('$apiBaseUrl/user/$_userId/alerts/$alertId/read'),
+          );
+        }
+      }
+    } catch (_) {
+      // Silent fail: alerts should not block home screen.
+    } finally {
+      _checkingAlerts = false;
+    }
+  }
+
+  Future<void> _trackAction(String action) async {
+    final prefs = await SharedPreferences.getInstance();
+    final items = [..._recentActions];
+    items.remove(action);
+    items.insert(0, action);
+    final trimmed = items.take(4).toList();
+    await prefs.setStringList('recentActions', trimmed);
+    if (!mounted) return;
+    setState(() => _recentActions = trimmed);
   }
 
   Future<void> _openPsychologyTest() async {
@@ -66,22 +131,28 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+    await _trackAction('Психология тесті');
   }
 
   void _onTabTapped(int index) async {
-    if (index == 2) {
+    final isPsychologist = _role == 'psychologist';
+    final chatTabIndex = isPsychologist ? 0 : 2;
+
+    if (index == chatTabIndex) {
       final newIndex = await Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => const ChatScreen()),
       );
-      if (newIndex is int && newIndex != 2) {
+      await _trackAction('Чат');
+      await _checkUnreadAlerts();
+      if (newIndex is int && newIndex != chatTabIndex) {
         setState(() {
           _tab = newIndex;
         });
       }
       return;
     }
-    if (index == 1) {
+    if (!isPsychologist && index == 1) {
       if (_userId == null) {
         await Navigator.push(
           context,
@@ -100,7 +171,16 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       );
+      await _trackAction('Көңіл-күй');
+      await _checkUnreadAlerts();
       return;
+    }
+
+    if (!isPsychologist && index == 3) {
+      await _trackAction('Мақалалар');
+    }
+    if (isPsychologist && index == 1) {
+      await _trackAction('Профиль');
     }
 
     setState(() {
@@ -109,6 +189,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   List<Widget> _buildTabScreens() {
+    if (_role == 'psychologist') {
+      return [
+        _buildPsychologistHomePage(),
+        const ProfileScreen(),
+      ];
+    }
+
     return [
       _buildHomePageBody(),
       Container(),
@@ -121,6 +208,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final displayName = (_name == null || _name!.trim().isEmpty)
         ? 'достым'
         : _name!.split(' ').first;
+
+    if (_role == 'psychologist') {
+      return _buildPsychologistHomePage();
+    }
 
     return SafeArea(
       child: ListView(
@@ -171,7 +262,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 6),
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.16),
+                            color: Colors.white.withValues(alpha: 0.16),
                             borderRadius: BorderRadius.circular(999),
                           ),
                           child: const Row(
@@ -201,7 +292,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     width: 70,
                     height: 70,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.18),
+                      color: Colors.white.withValues(alpha: 0.18),
                       borderRadius: BorderRadius.circular(22),
                     ),
                     child: const Center(
@@ -218,8 +309,109 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 14),
           const _QuoteGeneratorWidget(),
           const SizedBox(height: 14),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Жылдам әрекеттер',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      ActionChip(
+                        avatar: const Icon(Icons.chat_bubble_outline, size: 18),
+                        label: const Text('Чат'),
+                        onPressed: () => _onTabTapped(2),
+                      ),
+                      ActionChip(
+                        avatar: const Icon(Icons.favorite_border, size: 18),
+                        label: const Text('Көңіл-күй'),
+                        onPressed: () => _onTabTapped(1),
+                      ),
+                      ActionChip(
+                        avatar:
+                            const Icon(Icons.psychology_alt_outlined, size: 18),
+                        label: const Text('Тест'),
+                        onPressed: _openPsychologyTest,
+                      ),
+                      ActionChip(
+                        avatar: const Icon(Icons.newspaper_outlined, size: 18),
+                        label: const Text('Мақалалар'),
+                        onPressed: () => _onTabTapped(3),
+                      ),
+                    ],
+                  ),
+                  if (_recentActions.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'Соңғы әрекеттер: ${_recentActions.join(" · ")}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ]
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
           _PsychologyTestCard(onStart: _openPsychologyTest),
           const SizedBox(height: 12),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPsychologistHomePage() {
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Психолог панелі',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Сізге тек маңыздысы қалды: клиент чаты және өз профиліңіз.',
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _onTabTapped(0),
+                      icon: const Icon(Icons.forum_outlined),
+                      label: const Text('Клиенттер чаттарын ашу'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.person_outline),
+              title: const Text('Психолог профилі'),
+              subtitle: const Text('Жеке мәліметтер мен қауіпсіздік'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => setState(() => _tab = 1),
+            ),
+          ),
         ],
       ),
     );
@@ -228,8 +420,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFEAF3FF),
-      drawer: _buildDrawer(),
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      drawer: _role == 'psychologist' ? null : _buildDrawer(),
       appBar: AppBar(
         title: const Text(
           'QORGA',
@@ -239,8 +431,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         centerTitle: true,
-        backgroundColor: kPrimaryColor,
-        elevation: 0,
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -248,19 +438,23 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _tab,
         onTap: _onTabTapped,
-        type: BottomNavigationBarType.fixed,
-        selectedItemColor: kPrimaryColor,
-        unselectedItemColor: Colors.grey[600],
-        items: const [
-          BottomNavigationBarItem(
-              icon: Icon(Icons.home_outlined), label: 'Басты'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.favorite_border), label: 'Көңіл-күй'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.chat_bubble_outline), label: 'Чат'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.newspaper), label: 'Мақалалар'),
-        ],
+        items: _role == 'psychologist'
+            ? const [
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.chat_bubble_outline), label: 'Чаттар'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.person_outline), label: 'Профиль'),
+              ]
+            : const [
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.home_outlined), label: 'Басты'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.favorite_border), label: 'Көңіл-күй'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.chat_bubble_outline), label: 'Чат'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.newspaper), label: 'Мақалалар'),
+              ],
       ),
     );
   }
@@ -273,7 +467,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ListTile(
               leading: CircleAvatar(
                 radius: 22,
-                backgroundColor: kPrimaryColor.withOpacity(0.1),
+                backgroundColor: kPrimaryColor.withValues(alpha: 0.1),
                 child: const Icon(
                   Icons.account_circle,
                   size: 30,
@@ -404,13 +598,13 @@ class _QuoteGeneratorWidgetState extends State<_QuoteGeneratorWidget> {
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
-                  color: kPrimaryColor.withOpacity(0.8),
+                  color: kPrimaryColor.withValues(alpha: 0.8),
                 ),
               ),
               const SizedBox(height: 12),
               Icon(
                 Icons.format_quote_rounded,
-                color: kPrimaryColor.withOpacity(0.7),
+                color: kPrimaryColor.withValues(alpha: 0.7),
                 size: 30,
               ),
               const SizedBox(height: 8),
@@ -450,10 +644,11 @@ class _PsychologyTestCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      color: Colors.white,
+      color: theme.colorScheme.surfaceContainerLowest,
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
         onTap: onStart,
@@ -467,7 +662,7 @@ class _PsychologyTestCard extends StatelessWidget {
                   width: 60,
                   height: 60,
                   decoration: BoxDecoration(
-                    color: kPrimaryColor.withOpacity(0.1),
+                    color: kPrimaryColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: const Center(
@@ -487,7 +682,7 @@ class _PsychologyTestCard extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w700,
-                          color: Colors.grey[900],
+                          color: theme.colorScheme.onSurface,
                         ),
                       ),
                       const SizedBox(height: 4),

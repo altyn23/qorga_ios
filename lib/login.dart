@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'config.dart';
 import 'forgot_password.dart';
 import 'home.dart';
+import 'widgets/email_validator.dart';
 import 'widgets/notification_helper.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -107,7 +108,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     validator: (value) {
                       final v = value?.trim() ?? '';
                       if (v.isEmpty) return "Email енгізіңіз";
-                      if (!v.contains("@")) return "Дұрыс email жазыңыз";
+                      if (!EmailValidator.isValid(v)) {
+                        return "Дұрыс email жазыңыз";
+                      }
                       return null;
                     },
                   ),
